@@ -9,8 +9,8 @@
 #include <assert.h>
 
 
-#ifndef ARR_SIZE
-#define ARR_SIZE(arr) (sizeof (arr) / sizeof (arr)[0])
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(arr) (sizeof (arr) / sizeof (arr)[0])
 #endif
 
 #ifndef offsetof
@@ -22,11 +22,11 @@
 #endif
 
 #ifndef min
-#define min(a, b) ({typeof(a) _a = (a); typeof(b) _b = (b); _a < _b ? : _a : _b; })
+#define min(a, b) ({typeof(a) _a = (a); typeof(b) _b = (b); _a < _b ? _a : _b; })
 #endif
 
 #ifndef max
-#define max(a, b) ({typeof(a) _a = (a); typeof(b) _b = (b); _a > _b ? : _a : _b; })
+#define max(a, b) ({typeof(a) _a = (a); typeof(b) _b = (b); _a > _b ? _a : _b; })
 #endif
 
 
@@ -196,7 +196,7 @@ static inline struct dict_val dict_val_ ## field(T v)		\
 	return val;						\
 }								\
 								\
-static inline bool dict_val_is ## field(struct dict_val *val)	\
+static inline bool dict_val_is_ ## field(struct dict_val *val)	\
 {								\
 	return val && val->type == vtype;			\
 }
