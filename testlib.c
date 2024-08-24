@@ -56,14 +56,14 @@ void test_dict(void)
 	dict_set(&dict, "dict", dict2);
 
 	char *data = malloc(40);
-	strcpy(data, "9: opaque value");
+	strcpy(data, "9");
 
 	struct opaque opaque = {
 		.fprint = test_dict_opaque_fprint,
 		.discard = free,
 		.data = data,
 	};
-	dict_set(&dict, "opaque", opaque);
+	dict_set(&dict, "opaque value", opaque);
 
 	dict_fprint(&dict, stdout);
 	fputc('\n', stdout);
