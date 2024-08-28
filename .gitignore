@@ -1,2 +1,6 @@
 *.o
+*out
+.cache
+.vscode
+compile_commands.json
 testlib

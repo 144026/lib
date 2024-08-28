@@ -2,6 +2,46 @@
 #include <ctype.h>
 #include "common.h"
 
+#define expect_or_fail(x) do { \
+	printf("%s:%d expecting: " #x "\n", __FILE__, __LINE__); \
+	if (!(x)) exit(1); \
+} while (0)
+
+struct test_list_head {
+	const char *name;
+	struct list_head head;
+};
+
+struct test_list_node {
+	struct list_head list;
+	int n;
+};
+
+void test_list(void)
+{
+	struct  test_list_head h = {
+		.name = "test_list1",
+	};
+	INIT_LIST_HEAD(&h.head);
+	expect_or_fail(list_empty(&h.head));
+
+	struct test_list_node a, b, c, *p;
+	a.n = 1;
+	list_add(&a.list, &h.head);
+	b.n = 2;
+	list_add_tail(&b.list, &h.head);
+	c.n = 3;
+	list_add(&c.list, &h.head);
+
+	int i = 0;
+	int nums[] = {3, 1, 2};
+	list_for_each_entry(p, &h.head, list) {
+		printf("p->n %d, nums[%d] %d\n", p->n, i, nums[i]);
+		expect_or_fail(p->n == nums[i]);
+		i++;
+	}
+}
+
 void test_dynamic_array(void)
 {
 	struct dynamic_array da = DYNAMIC_ARRAY_INIT;
@@ -147,6 +187,7 @@ int test_dict_hash(const char *file)
 
 int main(int argc, char *argv[])
 {
+	test_list();
 	test_dynamic_array();
 	test_dict();
 	if (argc > 1 && argv[1])
