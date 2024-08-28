@@ -99,7 +99,7 @@ static inline void *da_expand(struct dynamic_array *da, size_t item_size, int n)
 	else
 		assert(da->item_size == item_size && "inconsistent array item size");
 
-	while (da->size + n >= cap) {
+	while (da->size + n > cap) {
 		if (cap)
 			cap = cap << 1;
 		else
@@ -162,8 +162,13 @@ struct opaque {
 	void *data;
 };
 
+struct dict_lookup_bucket {
+	struct dynamic_array pitems;
+};
+
 struct dict {
 	struct dynamic_array items;
+	struct dynamic_array buckets;
 };
 
 struct dict_val {
@@ -185,9 +190,21 @@ struct dict_item {
 	struct dict_val val;
 };
 
-#define dict_new() ((struct dict) { DYNAMIC_ARRAY_INIT })
+#define dict_new() ((struct dict) { DYNAMIC_ARRAY_INIT, DYNAMIC_ARRAY_INIT })
 
 #define dict_freed(d) ((d)->items.capacity == 0)
+
+static inline int dict_hashkey(struct dict *d, const char *k)
+{
+	unsigned long hash = 5381;
+	const unsigned char *str = (void *) k;
+	int c;
+
+	while ((c = *str++))
+		hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+
+	return hash % d->buckets.size;
+}
 
 #define define_dict_val_type(field, T, vtype)			\
 static inline struct dict_val dict_val_ ## field(T v)		\
@@ -253,6 +270,24 @@ static inline struct dict_item *dict_item(struct dict *d, const char *k)
 {
 	struct dict_item *item;
 
+	if (__builtin_expect((!d || !k), 0))
+		return NULL;
+
+	if (d->buckets.size) {
+		int i, idx = dict_hashkey(d, k);
+		struct dict_lookup_bucket *bucket = da_item(&d->buckets, idx);
+
+		if (!bucket)
+			return NULL;
+
+		for (i = 0; i < bucket->pitems.size; i++) {
+			item = *(struct dict_item **) da_item(&bucket->pitems, i);
+			if (!strcmp(k, item->key))
+				return item;
+		}
+		return NULL;
+	}
+
 	dict_item_foreach(d, item) {
 		if (!strcmp(k, item->key))
 			return item;
@@ -287,6 +322,7 @@ static inline void dict_val_discard(struct dict_val *val)
 	}
 	case DICT_VAL_DICT: {
 		struct dict_item *item;
+		struct dict_lookup_bucket *bucket;
 
 		while ((item = da_pop(&val->dict.items)) != NULL) {
 			dict_val_discard(&item->val);
@@ -296,6 +332,11 @@ static inline void dict_val_discard(struct dict_val *val)
 			}
 		}
 		da_free(&val->dict.items);
+
+		while ((bucket = da_pop(&val->dict.buckets)) != NULL)
+			da_free(&bucket->pitems);
+
+		da_free(&val->dict.buckets);
 	}
 	case DICT_VAL_OPAQUE:
 		if (val->opaque.discard)
@@ -411,12 +452,55 @@ static inline bool dict_val_same(struct dict_val *a, struct dict_val *b)
 	case DICT_VAL_STRING:
 		return a->string == b->string;
 	case DICT_VAL_ARRAY:
+		return memcmp(&a->array, &b->array, sizeof(struct dynamic_array)) == 0;
 	case DICT_VAL_DICT:
+		return memcmp(&a->dict, &b->dict, sizeof(struct dict)) == 0;
 	case DICT_VAL_OPAQUE:
-		return a == b;
+		return memcmp(&a->opaque, &b->opaque, sizeof(struct opaque)) == 0;
 	default:
 		return false;
 	}
+}
+
+static inline void dict_hash_item(struct dict *d, struct dict_item *item)
+{
+	int h = dict_hashkey(d, item->key);
+	struct dict_lookup_bucket *b = da_item(&d->buckets, h);
+
+	da_append(&b->pitems, item);
+}
+
+static inline void dict_rehash_all(struct dict *d)
+{
+	struct dict_item *item;
+
+	if (d->items.capacity <= d->buckets.capacity)
+		return;
+
+	while (d->items.capacity > d->buckets.capacity)
+		da_append(&d->buckets, DYNAMIC_ARRAY_INIT);
+
+	memset(d->buckets.data, 0, d->buckets.item_size * d->buckets.capacity);
+	d->buckets.size = d->buckets.capacity;
+
+	dict_item_foreach(d, item) {
+		dict_hash_item(d, item);
+	}
+}
+
+#define DICT_HASHING_THRESH 32
+
+static inline void dict_add_item(struct dict *d, struct dict_item *item)
+{
+	da_append(&d->items, *item);
+
+	if (d->items.size < DICT_HASHING_THRESH)
+		return;
+
+	dict_rehash_all(d);
+
+	item = da_item(&d->items, d->items.size - 1);
+	dict_hash_item(d, item);
 }
 
 #define __dict_set_val(D, K, V) do {					\
@@ -431,9 +515,8 @@ static inline bool dict_val_same(struct dict_val *a, struct dict_val *b)
 			__item->val = __new_item.val;			\
 		}							\
 	} else {							\
-		da_append(&(D)->items, __new_item);			\
+		dict_add_item(D, &__new_item);				\
 	}								\
 } while (0)
 
 #define dict_set(D, K, V) __dict_set_val(D, K, dict_val_from(V))
-

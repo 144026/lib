@@ -1,3 +1,5 @@
+#include <time.h>
+#include <ctype.h>
 #include "common.h"
 
 void test_dynamic_array(void)
@@ -70,9 +72,86 @@ void test_dict(void)
 	dict_discard(&dict);
 }
 
+
+
+void tokenize(struct dynamic_array *da, char *s)
+{
+	char *tok;
+
+	while (1) {
+		while (*s && isspace(*s)) s++;
+		if (!*s) return;
+
+		tok = s;
+		while (*s && !isspace(*s)) s++;
+		if (*s) *s++ = '\0';
+		da_append(da, strdup(tok));
+	}
+}
+
+int compare_freq(const void *_a, const void *_b)
+{
+	const struct dict_item *a = _a;
+	const struct dict_item *b = _b;
+	return a->val.number - b->val.number;
+}
+
+double timespec_delta(struct timespec *a, struct timespec *b)
+{
+	double ats = a->tv_sec + a->tv_nsec * 1e-9;
+	double bts = b->tv_sec + b->tv_nsec * 1e-9;
+	return bts - ats;
+}
+
+// t8.shakespeare.txt
+int test_dict_hash(const char *file)
+{
+	static char linebuf[1024];
+	FILE *fp;
+	char *line;
+	struct dynamic_array tokens = DYNAMIC_ARRAY_INIT;
+	struct dict freqs = dict_new();
+
+	file = file ?: __FILE__;
+	fp = fopen(file, "r");
+	while ((line = fgets(linebuf, sizeof(linebuf), fp)) != NULL) {
+		tokenize(&tokens, line);
+	}
+
+	fclose(fp);
+
+	fprintf(stdout, "%s: %d tokens\n", file, tokens.size);
+
+	int i;
+	const char **toks = (void *) tokens.data;
+	struct timespec begin, end;
+	clock_gettime(CLOCK_MONOTONIC, &begin);
+
+	for (i = 0; i < tokens.size; i++) {
+		struct dict_val *val = dict_get(&freqs, toks[i]);
+		if (val) {
+			val->number++;
+		} else {
+			dict_set(&freqs, toks[i], 1);
+		}
+	}
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	fprintf(stdout, "Counting freq took %lf secs\n", timespec_delta(&begin, &end));
+
+	qsort(freqs.items.data, freqs.items.size, freqs.items.item_size, compare_freq);
+	dict_fprint(&freqs, stdout);
+	fputc('\n', stdout);
+
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	test_dynamic_array();
 	test_dict();
+	if (argc > 1 && argv[1])
+		test_dict_hash(argv[1]);
+	else
+		test_dict_hash(NULL);
 	return 0;
 }
