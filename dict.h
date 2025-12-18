@@ -31,6 +31,7 @@ struct dict_lookup_bucket {
 struct dict {
 	struct dynamic_array items;
 	struct dynamic_array buckets;
+	int stress;
 };
 
 struct dict_val {
@@ -52,7 +53,7 @@ struct dict_item {
 	struct dict_val val;
 };
 
-#define dict_new() ((struct dict) { DYNAMIC_ARRAY_INIT, DYNAMIC_ARRAY_INIT })
+#define dict_new() ((struct dict) { DYNAMIC_ARRAY_INIT, DYNAMIC_ARRAY_INIT, 0 })
 
 #define dict_freed(d) ((d)->items.capacity == 0)
 
@@ -100,30 +101,37 @@ define_dict_val_type(opaque, struct opaque, DICT_VAL_OPAQUE);
  *
  * By factoring macro args out of type-dependent expression, typeof(args) always matches typeof(const_exp)
  */
-#define __match_type(T, v, expr) __builtin_choose_expr(__builtin_types_compatible_p(T, typeof(v)), expr,
-#define __match_end(T) )
+#define __matchT_type(T, v, expr, else_expr) \
+	__builtin_choose_expr(__builtin_types_compatible_p(T, typeof(v)), expr, else_expr)
 
-#define dict_val_from(v) (					\
-	__match_type(int, v, dict_val_number)			\
-	__match_type(long int, v, dict_val_number)			\
-	__match_type(double, v, dict_val_Float)			\
-	__match_type(struct dynamic_array, v, dict_val_array)	\
-	__match_type(struct dict, v, dict_val_dict)		\
-	__match_type(struct opaque, v, dict_val_opaque)		\
-	__match_type(char[], v, __builtin_choose_expr(__builtin_constant_p(v), dict_val_literal_string, (void) 0)) \
-	__match_type(char *, v, dict_val_string)		\
-	__match_type(const char *, v, dict_val_literal_string)	\
-	(void) 0						\
-	__match_end(const char *)				\
-	__match_end(char *)					\
-	__match_end(char[])					\
-	__match_end(struct opaque)				\
-	__match_end(struct dict)				\
-	__match_end(struct dynamic_array)			\
-	__match_end(double)					\
-	__match_end(long int)					\
-	__match_end(int)					\
-) (v)
+#define __matchT_1(v, T, expr) __matchT_type(T, v, expr, (void)0)
+#define __matchT_2(v, T, expr, ...) __matchT_type(T, v, expr, __matchT_1(v, ##__VA_ARGS__))
+#define __matchT_3(v, T, expr, ...) __matchT_type(T, v, expr, __matchT_2(v, ##__VA_ARGS__))
+#define __matchT_4(v, T, expr, ...) __matchT_type(T, v, expr, __matchT_3(v, ##__VA_ARGS__))
+#define __matchT_5(v, T, expr, ...) __matchT_type(T, v, expr, __matchT_4(v, ##__VA_ARGS__))
+#define __matchT_6(v, T, expr, ...) __matchT_type(T, v, expr, __matchT_5(v, ##__VA_ARGS__))
+#define __matchT_7(v, T, expr, ...) __matchT_type(T, v, expr, __matchT_6(v, ##__VA_ARGS__))
+#define __matchT_8(v, T, expr, ...) __matchT_type(T, v, expr, __matchT_7(v, ##__VA_ARGS__))
+#define __matchT_9(v, T, expr, ...) __matchT_type(T, v, expr, __matchT_8(v, ##__VA_ARGS__))
+
+#define __matchT_arg_n(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, \
+	_11, _12, _13, _14, _15, _16, _17, _18, _19, _20, N, ...) N
+#define __matchT_nargs_rseq() 10,10,9,9,8,8,7,7,6,6,5,5,4,4,3,3,2,2,1,1,0,0
+#define __matchT_nargs_(...) __matchT_arg_n(__VA_ARGS__)
+#define __matchT_nargs(...) __matchT_nargs_(__VA_ARGS__, __matchT_nargs_rseq())
+#define __matchT(v, ...) CONCAT(__matchT_, __matchT_nargs(v, __VA_ARGS__)) (v, __VA_ARGS__)
+
+#define dict_val_from(v) (__matchT(v, \
+	int, dict_val_number, \
+	long int, dict_val_number, \
+	double, dict_val_Float, \
+	struct dynamic_array, dict_val_array, \
+	struct dict, dict_val_dict, \
+	struct opaque, dict_val_opaque, \
+	char *, dict_val_string, \
+	const char *, dict_val_literal_string, \
+	char[], __builtin_choose_expr(__builtin_constant_p(v), dict_val_literal_string, (void)0) \
+)) (v)
 
 #define dict_item_foreach(d, item) \
 for (item = da_item(&(d)->items, 0); item && item - (struct dict_item *) (d)->items.data < (d)->items.size; item++)
@@ -199,6 +207,7 @@ static inline void dict_val_discard(struct dict_val *val)
 			da_free(&bucket->pitems);
 
 		da_free(&val->dict.buckets);
+		val->dict.stress = 0;
 	}
 	case DICT_VAL_OPAQUE:
 		if (val->opaque.discard)
@@ -329,28 +338,36 @@ static inline void dict_hash_item(struct dict *d, struct dict_item *item)
 	int h = dict_hashkey(d, item->key);
 	struct dict_lookup_bucket *b = da_item(&d->buckets, h);
 
+	if (b->pitems.size == 0)
+		d->stress++;
+
 	da_append(&b->pitems, item);
 }
+
+#define DICT_HASHING_THRESH 32
 
 static inline void dict_rehash_all(struct dict *d)
 {
 	struct dict_item *item;
+	int ocap = d->buckets.capacity;
 
-	if (d->items.capacity <= d->buckets.capacity)
+	/* stress factor 0.75 */
+	if (4 * d->stress < 3 * d->buckets.size)
 		return;
 
-	while (d->items.capacity > d->buckets.capacity)
+	while (d->buckets.capacity <= max(ocap, DICT_HASHING_THRESH))
 		da_append(&d->buckets, DYNAMIC_ARRAY_INIT);
 
+	// fprintf(stderr, "--> dict[%p] rehash: items size %d capacity %d, stress %d, bucket capacity %d to %d\n",
+	// 	d, d->items.size, d->items.capacity, d->stress, ocap, d->buckets.capacity);
 	memset(d->buckets.data, 0, d->buckets.item_size * d->buckets.capacity);
 	d->buckets.size = d->buckets.capacity;
+	d->stress = 0;
 
 	dict_item_foreach(d, item) {
 		dict_hash_item(d, item);
 	}
 }
-
-#define DICT_HASHING_THRESH 32
 
 static inline void dict_add_item(struct dict *d, struct dict_item *item)
 {

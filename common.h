@@ -23,6 +23,13 @@
 #define max(a, b) ({typeof(a) _a = (a); typeof(b) _b = (b); _a > _b ? _a : _b; })
 #endif
 
+#ifndef PASTE
+#define PASTE(x, y) x ## y
+#endif
+
+#ifndef CONCAT
+#define CONCAT(x, y) PASTE(x, y)
+#endif
 
 enum loglevel {
 	LOGLEVEL_NONE,
